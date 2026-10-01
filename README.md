@@ -18,11 +18,28 @@ Seven tools, all prefixed `mumu_`:
 
 ## Install
 
-The plugin is a plain DSH bundle. With `$PROFILE` = `C:\Users\HP\.dsh\profiles\desktop`:
+### From npm
 
 ```powershell
-# 1. the files (already in place if you are reading this from the profile)
-#    $PROFILE\plugins\dsh-mumuemulator-use\{package.json,cordis.patch.yml,lib\*.js}
+dsh plugin --profile <your-profile> add dsh-mumuemulator-use
+```
+
+That's it — `dsh plugin add` resolves the dependency, links it into the
+profile, and appends `dsh-mumuemulator-use` to `dsh.profile.bundles`. Restart
+the app or toggle the bundle to load it.
+
+> **Desktop DSH users** may see a pnpm warning `missing peer @deepseek-ai/dsh`.
+> This is expected and harmless: Desktop DSH ships as an Electron app and does
+> not expose the host to the plugin's `node_modules`. The plugin resolves the
+> host through the Electron runtime, and functionality is unaffected.
+
+### From source
+
+Only needed when developing the plugin against a checkout under
+`$PROFILE\plugins\`. With `$PROFILE` = `C:\Users\HP\.dsh\profiles\desktop`:
+
+```powershell
+# 1. put the files under $PROFILE\plugins\dsh-mumuemulator-use\
 
 # 2. declare it as a dependency through the official channel
 dsh plugin --profile desktop add file:plugins/dsh-mumuemulator-use
@@ -31,15 +48,11 @@ dsh plugin --profile desktop add file:plugins/dsh-mumuemulator-use
 #    autoInstallPeers: false, so make sure it is actually there
 dsh plugin --profile desktop add @deepseek-ai/schemastery
 
-# 3. add it to the bundle list, in $PROFILE\package.json
-#    "dsh": { "profile": { "bundles": [ ..., "dsh-mumuemulator-use" ] } }
-
-# 4. link it (see "Why a junction" below) — do this ONCE, after every install
-Get-Item $PROFILE\node_modules\dsh-mumuemulator-use -Force | Select-Object LinkType
-cmd /c rmdir $PROFILE\node_modules\dsh-mumuemulator-use    # link only — NEVER /s, NEVER -Recurse
+# 3. link it as a junction (see "First: ..." below) — needed ONCE
+cmd /c rmdir $PROFILE\node_modules\dsh-mumuemulator-use    # link only — NEVER /s
 New-Item -ItemType Junction -Path $PROFILE\node_modules\dsh-mumuemulator-use -Target $PROFILE\plugins\dsh-mumuemulator-use
 
-# 5. reload the profile (restart the app, or toggle the bundle off/on)
+# 4. reload the profile
 ```
 
 Nothing else is needed: the plugin finds MuMu itself on first use.
@@ -113,11 +126,10 @@ Only `mumuRoot`/`mumuManagerPath` short-circuit detection; `adbPath` alone overr
   `MuMu instance "1" is not running Android yet (player_state=stopped).`
 - **`adb` must be usable.** With a wrong `adbPath` you get `spawn <path> ENOENT`; `mumu_shell` still works
   because it never touches adb.
-- **`lib\index.js` is a reconstruction, not the original file.** It was rebuilt from this session's
-  tool-call log after the original was deleted by mistake. Five of the seven files came back
-  byte-for-byte identical; `lib\index.js` is ~330 bytes shorter than the file it replaces. Every
-  tool description matches the live registry and all behaviour probes pass — see "Known gaps"
-  before trusting a branch that has never been exercised.
+- **`lib\index.js` provenance.** This file was reconstructed from the session's tool-call log
+  after the original was deleted by mistake. It has been verified complete — line-for-line against
+  every `read` snapshot and byte-for-byte on the byte count — and all behaviour probes pass. See
+  `NOTES-dsh-mumuemulator-use.md` for the accounting.
 - **The framebuffer is landscape.** `wm size` reports 900x1600 but screenshots come back 1600x900, and
   `mumu_ui` coordinates are framebuffer pixels, i.e. what you see in a `mumu_screenshot` image.
 - Screenshots are ~1.15 MB / 1600x900. Pass `includeImage: false` (or set `screenshotIncludeImage: false`)
@@ -221,72 +233,46 @@ Measured on 2026-10-01 with `mumu_shell {command: 'sleep 60'}` and a background 
 So a reload does not disturb in-flight work and does not leak. To reproduce: start a long `mumu_shell`,
 poll the count from a background `pwsh` job, and trigger the reload by saving a file under `%PROFILE%`.
 
-## Known gaps
+## Uninstall
 
-**None — this file is complete.** An earlier revision of this README claimed `lib\index.js` was
-~330 bytes short of the copy that was running before the accidental delete (31 907 B on disk vs
-31 603 B reconstructed). That was a measurement artefact, and the accounting is now exact.
-
-Two writes to the file never reached the tool-call log, so replaying `write`/`edit` alone could not
-reproduce them:
-
-- a `run_code` step removed an earlier `mumu-activated.json` probe block (−4 lines) — the replay
-  still carried it;
-- a `pwsh` step removed one further leftover line with
-  `Get-Content | Where-Object { $_ -notmatch 'mumu-activated' } | Set-Content -Encoding utf8NoBOM`
-  (−1 line) and, in the same pass, rewrote the whole file with **CRLF** line endings where the
-  replay had LF.
-
-With those two corrections applied, the reconstruction matches the live file *line for line* at
-every one of the twelve `read` snapshots, and the byte count reconciles twice over:
-
-```
-snapshot at log seq 1583:  30 704 B = 30 070 B (reconstruction) + 634 CRLF pairs  · 634 lines
-snapshot at log seq 2602:  31 907 B = 31 275 B (reconstruction) + 632 CRLF pairs  · 652 lines
-```
-
-so nothing is missing: the difference was entirely line endings. The shipped `lib\index.js`
-(31 279 B) is byte-for-byte the reconstruction — the two probe lines are gone — with LF endings
-instead of CRLF, which is a no-op for Node and is what `node --check` was run against.
+### From npm
 
 ```powershell
-# how the reconstruction was produced (workspace scripts, not shipped)
-node recover.mjs      # decompress session.v4.jsonl.zstd frame by frame,
-                      # replay every write/edit tool call in order
-node recover7.mjs     # anchor the read snapshots against the result
-node desc-diff.mjs    # diff the tool descriptions against the live registry
+dsh plugin --profile <your-profile> remove dsh-mumuemulator-use
 ```
 
-`session.v4.jsonl.zstd` is a concatenation of ~1500 zstd frames — one per append.
-`zlib.zstdDecompressSync` decodes only the **first** frame (242 bytes); scan for the magic
-`28 B5 2F FD` and decompress each frame separately.
+This drops the dependency, the `dsh.profile.bundles` entry, and the linked
+package. If you also applied the profile-patch edits (`tool-plugin-manager` /
+`hmr` / `tool-cordis`), see "Profile patch edits" below.
 
-## Uninstall
+### From source
+
+With `$PROFILE` = `C:\Users\HP\.dsh\profiles\desktop`:
 
 ```powershell
 # 1. remove the bundle through the official channel
-#    plugin_manager { action: 'remove_bundle', target: 'dsh-mumuemulator-use' }
-#    (or: dsh plugin --profile desktop remove dsh-mumuemulator-use)
+dsh plugin --profile desktop remove dsh-mumuemulator-use
 
-# 2. delete the leftover link and files
-Remove-Item $PROFILE\node_modules\dsh-mumuemulator-use -Force
-Remove-Item $PROFILE\plugins\dsh-mumuemulator-use -Recurse -Force
+# 2. delete the junction — NON-RECURSIVE only (see "First: ..." above)
+cmd /c rmdir "$env:USERPROFILE\.dsh\profiles\desktop\node_modules\dsh-mumuemulator-use"
 
-# 3. drop "dsh-mumuemulator-use" from dsh.profile.bundles in $PROFILE\package.json
+# 3. delete the source directory — this one is a real directory, so rmdir /s is safe here
+cmd /c rmdir /s /q "$env:USERPROFILE\.dsh\profiles\desktop\plugins\dsh-mumuemulator-use"
 
-# 4. restore the profile patch if you want the pre-install state.
-#    NOTE: $PROFILE\cordis.patch.yml.bak-before-mumu is NOT a mumu-only rollback.
-#    It is a snapshot of the whole profile patch taken before this round of edits,
-#    so restoring it also drops the tool-plugin-manager, hmr and tool-cordis rows
-#    that were added alongside the plugin. All four go at once — if you only want
-#    mumu gone, delete the `- id: mumu` row instead of restoring the backup.
-#    $PROFILE\cordis.patch.yml.bak-before-mumu
+# 4. if step 1 did not already do it, drop "dsh-mumuemulator-use" from
+#    dsh.profile.bundles in $PROFILE\package.json
 
 # 5. delete the path cache
 Remove-Item $PROFILE\dsh-mumu-paths.json
 ```
 
-The hand-made profile edits are exactly two: the `dsh-mumuemulator-use` entry in
-`$PROFILE\package.json` (`dependencies` and `dsh.profile.bundles`), and — if you applied them — the
-`tool-plugin-manager` / `hmr` / `tool-cordis` rows in `$PROFILE\cordis.patch.yml`. Backups of the
-pre-change files sit next to them as `*.bak-before-mumu`.
+### Profile patch edits
+
+If you applied them, three rows were added to `$PROFILE\cordis.patch.yml`:
+`tool-plugin-manager` (enabled), `hmr`, and `tool-cordis`.
+
+**Do not restore `cordis.patch.yml.bak-before-mumu` unless you want to undo
+all three at once.** That backup predates the whole round, so restoring it
+also disables HMR and `tool-plugin-manager`. If you only want the mumu row
+gone, delete the `- id: mumu` / `- id: mumuemulator-use` entry and leave the
+rest alone.

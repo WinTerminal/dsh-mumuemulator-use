@@ -1,6 +1,6 @@
 {
   "name": "dsh-mumuemulator-use",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Control the local MuMu Player 12 emulator (instances, apps, touch input, screenshots, shell) through MuMuManager.exe and adb.",
   "type": "module",
   "main": "lib/index.js",
